@@ -15,10 +15,12 @@ import (
 
 // Note - represent note entity
 type Note struct {
-	ID      int    `json:"id"`
-	UserID  string `json:"user_id"`
-	Title   string `json:"title"`
-	Content string `json:"content"`
+	ID           int       `json:"id"`
+	UserID       string    `json:"user_id"`
+	Title        string    `json:"title"`
+	Content      string    `json:"content"`
+	LastModified time.Time `json:"lastModified"`
+	IsPinned     bool      `json:"isPinned"`
 }
 
 var db *sql.DB
@@ -43,13 +45,31 @@ func main() {
 	r.HandleFunc("/notes", createNote).Methods("POST")
 	r.HandleFunc("/notes/{id}", updateNote).Methods("PUT")
 	r.HandleFunc("/notes/{id}", deleteNote).Methods("DELETE")
+	r.HandleFunc("/notes/{id}/toggle-pin", togglePinNote).Methods("PUT")
 
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./frontend/dist")))
 
 	log.Println("Server started on :8080")
+
+	// Add CORS middleware
+	corsMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+
 	srv := &http.Server{
 		Addr:         ":8080",
-		Handler:      r,
+		Handler:      corsMiddleware(r),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -58,8 +78,30 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
+// Toggle pin status of a note
+func togglePinNote(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	var body struct {
+		IsPinned bool `json:"isPinned"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Toggle the pin status
+	_, err := db.Exec("UPDATE notes SET is_pin = $1 WHERE id = $2", body.IsPinned, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func getNotes(w http.ResponseWriter, _ *http.Request) {
-	rows, err := db.Query("SELECT id, user_id, title, content FROM notes")
+	rows, err := db.Query("SELECT id, user_id, title, content, last_modified, is_pin FROM notes")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -69,7 +111,7 @@ func getNotes(w http.ResponseWriter, _ *http.Request) {
 	var notes []Note
 	for rows.Next() {
 		var n Note
-		if err := rows.Scan(&n.ID, &n.UserID, &n.Title, &n.Content); err != nil {
+		if err := rows.Scan(&n.ID, &n.UserID, &n.Title, &n.Content, &n.LastModified, &n.IsPinned); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -87,7 +129,7 @@ func getNoteByID(w http.ResponseWriter, r *http.Request) {
 	id := vars["id"]
 
 	var note Note
-	err := db.QueryRow("SELECT id, user_id, title, content FROM notes WHERE id = $1", id).Scan(&note.ID, &note.UserID, &note.Title, &note.Content)
+	err := db.QueryRow("SELECT id, user_id, title, content, last_modified, is_pin FROM notes WHERE id = $1", id).Scan(&note.ID, &note.UserID, &note.Title, &note.Content, &note.LastModified, &note.IsPinned)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "Note not found", http.StatusNotFound)
@@ -110,7 +152,7 @@ func createNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := db.Exec("INSERT INTO notes (user_id, title, content) VALUES ($1, $2, $3)", n.UserID, n.Title, n.Content)
+	_, err := db.Exec("INSERT INTO notes (user_id, title, content, last_modified, is_pin) VALUES ($1, $2, $3, $4, $5)", n.UserID, n.Title, n.Content, time.Now(), n.IsPinned)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -127,7 +169,7 @@ func updateNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := db.Exec("UPDATE notes SET title=$1, content=$2 WHERE id=$3", n.Title, n.Content, vars["id"])
+	_, err := db.Exec("UPDATE notes SET title=$1, content=$2, last_modified=$3, is_pin=$4 WHERE id=$5", n.Title, n.Content, time.Now(), n.IsPinned, vars["id"])
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
