@@ -48,6 +48,10 @@ var (
 	minioClient *minio.Client
 )
 
+const (
+	noteFilesBucket = "notes-files"
+)
+
 func main() {
 	// Load .env file
 	err := godotenv.Load()
@@ -343,7 +347,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	log.Printf("[uploadFile] Received file: %s, size: %d bytes", header.Filename, header.Size)
 
@@ -359,7 +363,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[uploadFile] Successfully read file data")
 
 	// Upload to MinIO
-	bucketName := "notes-files"
+	bucketName := noteFilesBucket
 	objectName := fmt.Sprintf("%s-%s", noteID, header.Filename)
 	log.Printf("[uploadFile] Attempting to upload file to MinIO bucket: %s, object: %s", bucketName, objectName)
 
@@ -444,7 +448,7 @@ func deleteFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete from MinIO
-	bucketName := "notes-files"
+	bucketName := noteFilesBucket
 	objectName := fmt.Sprintf("%s-%s", noteID, fileName)
 	if err := deleteFileFromMinio(bucketName, objectName); err != nil {
 		log.Printf("Error deleting from MinIO: %v", err)
