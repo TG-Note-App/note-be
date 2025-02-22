@@ -82,11 +82,13 @@ func main() {
 func togglePinNote(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
+	log.Printf("Toggling pin status for note ID: %s", id)
 
 	var body struct {
 		IsPinned bool `json:"isPinned"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		log.Printf("Error decoding toggle pin request: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -94,15 +96,19 @@ func togglePinNote(w http.ResponseWriter, r *http.Request) {
 	// Toggle the pin status
 	_, err := db.Exec("UPDATE notes SET is_pin = $1 WHERE id = $2", body.IsPinned, id)
 	if err != nil {
+		log.Printf("Error updating pin status: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("Successfully toggled pin status to %v for note ID: %s", body.IsPinned, id)
 	w.WriteHeader(http.StatusOK)
 }
 
 func getNotes(w http.ResponseWriter, _ *http.Request) {
+	log.Println("Fetching all notes")
 	rows, err := db.Query("SELECT id, user_id, title, content, last_modified, is_pin FROM notes")
 	if err != nil {
+		log.Printf("Error querying notes: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -120,13 +126,15 @@ func getNotes(w http.ResponseWriter, _ *http.Request) {
 
 	err = json.NewEncoder(w).Encode(notes)
 	if err != nil {
-		log.Printf("getNotes: %s\n", err.Error())
+		log.Printf("Error encoding notes response: %v", err)
 	}
+	log.Printf("Successfully retrieved %d notes", len(notes))
 }
 
 func getNoteByID(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
+	log.Printf("Fetching note with ID: %s", id)
 
 	var note Note
 	err := db.QueryRow("SELECT id, user_id, title, content, last_modified, is_pin FROM notes WHERE id = $1", id).Scan(&note.ID, &note.UserID, &note.Title, &note.Content, &note.LastModified, &note.IsPinned)
@@ -141,46 +149,62 @@ func getNoteByID(w http.ResponseWriter, r *http.Request) {
 
 	err = json.NewEncoder(w).Encode(note)
 	if err != nil {
-		log.Printf("getNote: %s\n", err.Error())
+		log.Printf("Error encoding note response: %v", err)
 	}
+	log.Printf("Successfully retrieved note with ID: %s", id)
 }
 
 func createNote(w http.ResponseWriter, r *http.Request) {
+	log.Println("Creating new note")
 	var n Note
 	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+		log.Printf("Error decoding create note request: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	_, err := db.Exec("INSERT INTO notes (user_id, title, content, last_modified, is_pin) VALUES ($1, $2, $3, $4, $5)", n.UserID, n.Title, n.Content, time.Now(), n.IsPinned)
 	if err != nil {
+		log.Printf("Error creating note: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("Successfully created note for user: %s", n.UserID)
 	w.WriteHeader(http.StatusCreated)
 }
 
 func updateNote(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	id := vars["id"]
+	log.Printf("Updating note with ID: %s", id)
+
 	var n Note
 	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+		log.Printf("Error decoding update note request: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	_, err := db.Exec("UPDATE notes SET title=$1, content=$2, last_modified=$3, is_pin=$4 WHERE id=$5", n.Title, n.Content, time.Now(), n.IsPinned, vars["id"])
+	_, err := db.Exec("UPDATE notes SET title=$1, content=$2, last_modified=$3, is_pin=$4 WHERE id=$5", n.Title, n.Content, time.Now(), n.IsPinned, id)
 	if err != nil {
+		log.Printf("Error updating note: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("Successfully updated note with ID: %s", id)
 }
 
 func deleteNote(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	_, err := db.Exec("DELETE FROM notes WHERE id=$1", vars["id"])
+	id := vars["id"]
+	log.Printf("Deleting note with ID: %s", id)
+
+	_, err := db.Exec("DELETE FROM notes WHERE id=$1", id)
 	if err != nil {
+		log.Printf("Error deleting note: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("Successfully deleted note with ID: %s", id)
 }
