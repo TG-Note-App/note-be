@@ -146,6 +146,7 @@ func uploadFileToMinio(bucketName, objectName string, fileData []byte) (string, 
 	}
 
 	// Upload the file
+	log.Printf("[uploadFileToMinio] Uploading file to MinIO - bucket: %s, object: %s", bucketName, objectName)
 	reader := bytes.NewReader(fileData)
 	_, err = minioClient.PutObject(context.Background(), bucketName, objectName, reader, int64(len(fileData)), minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
@@ -308,15 +309,27 @@ func createNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := db.Exec("INSERT INTO notes (user_id, title, content, last_modified, is_pin) VALUES ($1, $2, $3, $4, $5)", n.UserID, n.Title, n.Content, time.Now(), n.IsPinned)
+	// Use QueryRow with RETURNING clause to get the inserted ID
+	var noteID int
+	err := db.QueryRow(
+		"INSERT INTO notes (user_id, title, content, last_modified, is_pin) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+		n.UserID, n.Title, n.Content, time.Now(), n.IsPinned,
+	).Scan(&noteID)
 	if err != nil {
 		log.Printf("Error creating note: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Successfully created note for user: %s", n.UserID)
-	w.WriteHeader(http.StatusCreated)
+	// Return the created note ID in the response
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]int{"id": noteID}
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Error encoding response: %v", err)
+		return
+	}
+
+	log.Printf("Successfully created note with ID %d for user: %s", noteID, n.UserID)
 }
 
 func updateNote(w http.ResponseWriter, r *http.Request) {
@@ -345,13 +358,64 @@ func deleteNote(w http.ResponseWriter, r *http.Request) {
 	id := vars["id"]
 	log.Printf("Deleting note with ID: %s", id)
 
-	_, err := db.Exec("DELETE FROM notes WHERE id=$1", id)
+	// First, get all files associated with the note
+	rows, err := db.Query("SELECT id, file_name, ext FROM note_files WHERE note_id = $1", id)
 	if err != nil {
+		log.Printf("Error querying note files: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+
+	// Delete each file from MinIO
+	for rows.Next() {
+		var fileID int
+		var fileName, ext string
+		if err := rows.Scan(&fileID, &fileName, &ext); err != nil {
+			log.Printf("Error scanning file row: %v", err)
+			continue
+		}
+
+		objectName := fmt.Sprintf("%s-%s.%s", id, fileName, ext)
+		if err := deleteFileFromMinio(noteFilesBucket, objectName); err != nil {
+			log.Printf("Error deleting file from MinIO: %v", err)
+			// Continue with deletion even if MinIO deletion fails
+		}
+	}
+
+	// Delete all files from database and then delete the note (using transaction)
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("Error beginning transaction: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Delete files first (due to foreign key constraint)
+	_, err = tx.Exec("DELETE FROM note_files WHERE note_id = $1", id)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("Error deleting note files from database: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Then delete the note
+	_, err = tx.Exec("DELETE FROM notes WHERE id = $1", id)
+	if err != nil {
+		tx.Rollback()
 		log.Printf("Error deleting note: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Successfully deleted note with ID: %s", id)
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("Error committing transaction: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Successfully deleted note and associated files for note ID: %s", id)
 }
 
 func uploadFile(w http.ResponseWriter, r *http.Request) {
