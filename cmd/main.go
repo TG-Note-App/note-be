@@ -167,7 +167,32 @@ func uploadFileToMinio(bucketName, objectName string, fileData []byte) (string, 
 
 // Helper function to delete file from MinIO
 func deleteFileFromMinio(bucketName, objectName string) error {
-	return minioClient.RemoveObject(context.Background(), bucketName, objectName, minio.RemoveObjectOptions{})
+	ctx := context.Background()
+	log.Printf("[deleteFileFromMinio] Deleting file from MinIO - bucket: %s, object: %s", bucketName, objectName)
+
+	// Check if object exists before attempting deletion
+	_, err := minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
+	if err != nil {
+		log.Printf("[deleteFileFromMinio] Error checking object existence: %v", err)
+		return err
+	}
+
+	err = minioClient.RemoveObject(ctx, bucketName, objectName, minio.RemoveObjectOptions{
+		ForceDelete: true,
+	})
+	if err != nil {
+		log.Printf("[deleteFileFromMinio] Error during deletion: %v", err)
+		return err
+	}
+
+	// Verify deletion
+	_, err = minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
+	if err == nil {
+		return fmt.Errorf("object still exists after deletion attempt")
+	}
+
+	log.Printf("[deleteFileFromMinio] Successfully deleted object from MinIO")
+	return nil
 }
 
 // Toggle pin status of a note
@@ -420,6 +445,7 @@ func getFileInfo(filename string) (string, string) {
 func deleteFile(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	noteID := vars["id"]
+	log.Printf("[deleteFile] Starting file deletion process for note ID: %s", noteID)
 
 	// Create a struct to hold the request body
 	var requestBody struct {
@@ -427,44 +453,54 @@ func deleteFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
-		log.Printf("Error decoding file ID: %v", err)
+		log.Printf("[deleteFile] Error decoding request body: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	fileID := requestBody.FileID
+	log.Printf("[deleteFile] Attempting to delete file ID: %d from note ID: %s", fileID, noteID)
+
 	// Get file information from database
-	var fileName string
-	log.Printf("Deleting file with ID: %d from note ID: %s", fileID, noteID)
-	err := db.QueryRow("SELECT file_name FROM note_files WHERE id = $1 AND note_id = $2", fileID, noteID).Scan(&fileName)
+	var fileName, ext string
+	log.Printf("[deleteFile] Querying database for file information")
+	err := db.QueryRow("SELECT file_name, ext FROM note_files WHERE id = $1 AND note_id = $2", fileID, noteID).Scan(&fileName, &ext)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			log.Printf("[deleteFile] File not found - ID: %d, Note ID: %s", fileID, noteID)
 			http.Error(w, "File not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("Error querying file: %v", err)
+		log.Printf("[deleteFile] Database query error: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[deleteFile] Found file with name: %s", fileName)
 
 	// Delete from MinIO
 	bucketName := noteFilesBucket
-	objectName := fmt.Sprintf("%s-%s", noteID, fileName)
+	objectName := fmt.Sprintf("%s-%s.%s", noteID, fileName, ext)
+	log.Printf("[deleteFile] Attempting to delete from MinIO - bucket: %s, object: %s", bucketName, objectName)
 	if err := deleteFileFromMinio(bucketName, objectName); err != nil {
-		log.Printf("Error deleting from MinIO: %v", err)
+		log.Printf("[deleteFile] Failed to delete from MinIO: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[deleteFile] Successfully deleted file from MinIO storage")
 
 	// Delete from database
-	_, err = db.Exec("DELETE FROM note_files WHERE id = $1 AND note_id = $2", fileID, noteID)
+	log.Printf("[deleteFile] Attempting to delete file metadata from database")
+	result, err := db.Exec("DELETE FROM note_files WHERE id = $1 AND note_id = $2", fileID, noteID)
 	if err != nil {
-		log.Printf("Error deleting file metadata: %v", err)
+		log.Printf("[deleteFile] Failed to delete file metadata from database: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Successfully deleted file ID %d from note ID: %s", fileID, noteID)
+	rowsAffected, _ := result.RowsAffected()
+	log.Printf("[deleteFile] Database deletion complete - rows affected: %d", rowsAffected)
+
+	log.Printf("[deleteFile] Successfully completed deletion of file ID %d from note ID: %s", fileID, noteID)
 	w.WriteHeader(http.StatusOK)
 }
 
