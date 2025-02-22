@@ -422,11 +422,12 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 
 	// Return the file information
 	fileInfo := File{
-		ID:       fileID,
-		NoteID:   parseInt(noteID),
-		FileName: header.Filename,
-		Size:     int(header.Size),
-		URL:      downloadURL,
+		ID:        fileID,
+		NoteID:    parseInt(noteID),
+		FileName:  header.Filename,
+		Extension: ext,
+		Size:      int(header.Size),
+		URL:       downloadURL,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
