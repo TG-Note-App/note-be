@@ -25,7 +25,7 @@ import (
 // Note - represent note entity
 type Note struct {
 	ID           int       `json:"id"`
-	UserID       string    `json:"user_id"`
+	UserID       int       `json:"userId"`
 	Title        string    `json:"title"`
 	Content      string    `json:"content"`
 	LastModified time.Time `json:"lastModified"`
@@ -239,6 +239,7 @@ func getNotes(w http.ResponseWriter, _ *http.Request) {
 	for rows.Next() {
 		var n Note
 		if err := rows.Scan(&n.ID, &n.UserID, &n.Title, &n.Content, &n.LastModified, &n.IsPinned); err != nil {
+			log.Printf("Error scanning note: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -261,7 +262,6 @@ func getNotes(w http.ResponseWriter, _ *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			log.Printf("File: %+v", f)
 			files = append(files, f)
 		}
 
@@ -332,6 +332,10 @@ func createNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Convert UserID to string before verifying
+	userIDStr := strconv.Itoa(n.UserID)
+	VerifyTelegramAuth(userIDStr)
+
 	// Use QueryRow with RETURNING clause to get the inserted ID
 	var noteID int
 	err := db.QueryRow(
@@ -352,7 +356,7 @@ func createNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Successfully created note with ID %d for user: %s", noteID, n.UserID)
+	log.Printf("Successfully created note with ID %d for user: %d", noteID, n.UserID)
 }
 
 func updateNote(w http.ResponseWriter, r *http.Request) {
