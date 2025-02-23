@@ -25,7 +25,7 @@ import (
 // Note - represent note entity
 type Note struct {
 	ID           int       `json:"id"`
-	UserID       string    `json:"user_id"`
+	UserID       int       `json:"userId"`
 	Title        string    `json:"title"`
 	Content      string    `json:"content"`
 	LastModified time.Time `json:"lastModified"`
@@ -239,6 +239,7 @@ func getNotes(w http.ResponseWriter, _ *http.Request) {
 	for rows.Next() {
 		var n Note
 		if err := rows.Scan(&n.ID, &n.UserID, &n.Title, &n.Content, &n.LastModified, &n.IsPinned); err != nil {
+			log.Printf("Error scanning note: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -261,7 +262,6 @@ func getNotes(w http.ResponseWriter, _ *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			log.Printf("File: %+v", f)
 			files = append(files, f)
 		}
 
@@ -332,9 +332,18 @@ func createNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Convert UserID to string before verifying
+	userIDStr := strconv.Itoa(n.UserID)
+	isVerified, err := VerifyTelegramAuth(userIDStr)
+	if err != nil || !isVerified {
+		log.Printf("User ID verification failed for user ID: %d", n.UserID)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	// Use QueryRow with RETURNING clause to get the inserted ID
 	var noteID int
-	err := db.QueryRow(
+	err = db.QueryRow(
 		"INSERT INTO notes (user_id, title, content, last_modified, is_pin) VALUES ($1, $2, $3, $4, $5) RETURNING id",
 		n.UserID, n.Title, n.Content, time.Now(), n.IsPinned,
 	).Scan(&noteID)
@@ -352,7 +361,7 @@ func createNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Successfully created note with ID %d for user: %s", noteID, n.UserID)
+	log.Printf("Successfully created note with ID %d for user: %d", noteID, n.UserID)
 }
 
 func updateNote(w http.ResponseWriter, r *http.Request) {
@@ -417,7 +426,10 @@ func deleteNote(w http.ResponseWriter, r *http.Request) {
 	// Delete files first (due to foreign key constraint)
 	_, err = tx.Exec("DELETE FROM note_files WHERE note_id = $1", id)
 	if err != nil {
-		tx.Rollback()
+		err = tx.Rollback()
+		if err != nil {
+			log.Printf("Error rolling back transaction: %v", err)
+		}
 		log.Printf("Error deleting note files from database: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -426,7 +438,10 @@ func deleteNote(w http.ResponseWriter, r *http.Request) {
 	// Then delete the note
 	_, err = tx.Exec("DELETE FROM notes WHERE id = $1", id)
 	if err != nil {
-		tx.Rollback()
+		err = tx.Rollback()
+		if err != nil {
+			log.Printf("Error rolling back transaction: %v", err)
+		}
 		log.Printf("Error deleting note: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
