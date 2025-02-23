@@ -10,8 +10,10 @@ import (
 	"strings"
 )
 
+// #nosec G101
 const botToken = "ТВОЙ_BOT_TOKEN"
 
+// VerifyTelegramAuth verifies the Telegram auth hash
 func VerifyTelegramAuth(initData string) (bool, error) {
 	dataMap, err := parseInitData(initData)
 	if err != nil {

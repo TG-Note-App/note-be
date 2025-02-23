@@ -334,11 +334,16 @@ func createNote(w http.ResponseWriter, r *http.Request) {
 
 	// Convert UserID to string before verifying
 	userIDStr := strconv.Itoa(n.UserID)
-	VerifyTelegramAuth(userIDStr)
+	isVerified, err := VerifyTelegramAuth(userIDStr)
+	if err != nil || !isVerified {
+		log.Printf("User ID verification failed for user ID: %d", n.UserID)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	// Use QueryRow with RETURNING clause to get the inserted ID
 	var noteID int
-	err := db.QueryRow(
+	err = db.QueryRow(
 		"INSERT INTO notes (user_id, title, content, last_modified, is_pin) VALUES ($1, $2, $3, $4, $5) RETURNING id",
 		n.UserID, n.Title, n.Content, time.Now(), n.IsPinned,
 	).Scan(&noteID)
@@ -421,7 +426,10 @@ func deleteNote(w http.ResponseWriter, r *http.Request) {
 	// Delete files first (due to foreign key constraint)
 	_, err = tx.Exec("DELETE FROM note_files WHERE note_id = $1", id)
 	if err != nil {
-		tx.Rollback()
+		err = tx.Rollback()
+		if err != nil {
+			log.Printf("Error rolling back transaction: %v", err)
+		}
 		log.Printf("Error deleting note files from database: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -430,7 +438,10 @@ func deleteNote(w http.ResponseWriter, r *http.Request) {
 	// Then delete the note
 	_, err = tx.Exec("DELETE FROM notes WHERE id = $1", id)
 	if err != nil {
-		tx.Rollback()
+		err = tx.Rollback()
+		if err != nil {
+			log.Printf("Error rolling back transaction: %v", err)
+		}
 		log.Printf("Error deleting note: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
