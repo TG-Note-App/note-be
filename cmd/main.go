@@ -293,6 +293,29 @@ func getNoteByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get files for this note
+	fileRows, err := db.Query("SELECT id, note_id, file_name, size, ext, file_url FROM note_files WHERE note_id = $1", id)
+	if err != nil {
+		log.Printf("Error querying files for note %s: %v", id, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = fileRows.Close() }()
+
+	// Collect all files for this note
+	var files []File
+	for fileRows.Next() {
+		var f File
+		if err := fileRows.Scan(&f.ID, &f.NoteID, &f.FileName, &f.Size, &f.Extension, &f.URL); err != nil {
+			log.Printf("Error scanning file for note %s: %v", id, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		files = append(files, f)
+	}
+
+	note.Files = files
+
 	err = json.NewEncoder(w).Encode(note)
 	if err != nil {
 		log.Printf("Error encoding note response: %v", err)
