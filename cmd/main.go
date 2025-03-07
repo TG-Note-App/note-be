@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -21,6 +22,21 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
+
+type NoteRequest struct {
+	Title string `json:"title"`
+	Content string `json:"content"`
+	Files        []File    `json:"attachments"`
+	UserID int `json:"userId"`
+}
+
+type TelegramInitData struct {
+	UserID int `json:"userId"`
+	AuthDate int `json:"authDate"`
+	QueryID string `json:"queryId"`
+	Hash string `json:"hash"`
+	Signature string `json:"signature"`
+}
 
 // Note - represent note entity
 type Note struct {
@@ -46,6 +62,7 @@ type File struct {
 var (
 	db          *sql.DB
 	minioClient *minio.Client
+	botToken string
 )
 
 const (
@@ -58,6 +75,8 @@ func main() {
 	if err != nil {
 		log.Fatal("Error loading .env file")
 	}
+
+	botToken = os.Getenv("BOT_TOKEN")
 
 	db, err = sql.Open("postgres", os.Getenv("PG_DSN"))
 	if err != nil {
@@ -222,12 +241,26 @@ func togglePinNote(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func getNotes(w http.ResponseWriter, _ *http.Request) {
-	log.Println("Fetching all notes")
-	// ... existing code ...
+func getNotes(w http.ResponseWriter, r *http.Request) {
+	// Get user_id from query parameters
+	userIDStr := r.URL.Query().Get("userId")
+	if userIDStr == "" {
+		log.Printf("No userId provided in request parameters")
+		http.Error(w, "userId is required", http.StatusBadRequest)
+		return
+	}
 
-	// First get all notes
-	rows, err := db.Query("SELECT id, user_id, title, content, last_modified, is_pin FROM notes")
+	userID, err := strconv.Atoi(userIDStr)
+	if err != nil {
+		log.Printf("Invalid userId format: %v", err)
+		http.Error(w, "Invalid userId format", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Fetching notes for user ID: %d", userID)
+
+	// Query notes for specific user
+	rows, err := db.Query("SELECT id, user_id, title, content, last_modified, is_pin FROM notes WHERE user_id = $1", userID)
 	if err != nil {
 		log.Printf("Error querying notes: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -269,7 +302,6 @@ func getNotes(w http.ResponseWriter, _ *http.Request) {
 		notes = append(notes, n)
 	}
 
-	// ... existing code ...
 	err = json.NewEncoder(w).Encode(notes)
 	if err != nil {
 		log.Printf("Error encoding notes response: %v", err)
@@ -325,27 +357,28 @@ func getNoteByID(w http.ResponseWriter, r *http.Request) {
 
 func createNote(w http.ResponseWriter, r *http.Request) {
 	log.Println("Creating new note")
-	var n Note
-	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
-		log.Printf("Error decoding create note request: %v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Error reading r.Body: %v", err)
+		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
 	}
 
-	// Convert UserID to string before verifying
-	userIDStr := strconv.Itoa(n.UserID)
-	isVerified, err := VerifyTelegramAuth(userIDStr)
-	if err != nil || !isVerified {
-		log.Printf("User ID verification failed for user ID: %d", n.UserID)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	log.Printf("Raw JSON from request: %s", body)
+
+	var n NoteRequest
+	if err := json.Unmarshal(body, &n); err != nil {
+		log.Printf("Error decoding JSON: %v", err)
+		http.Error(w, "Error decoding JSON", http.StatusBadRequest)
 		return
 	}
+
 
 	// Use QueryRow with RETURNING clause to get the inserted ID
 	var noteID int
 	err = db.QueryRow(
 		"INSERT INTO notes (user_id, title, content, last_modified, is_pin) VALUES ($1, $2, $3, $4, $5) RETURNING id",
-		n.UserID, n.Title, n.Content, time.Now(), n.IsPinned,
+		n.UserID, n.Title, n.Content, time.Now(), false,
 	).Scan(&noteID)
 	if err != nil {
 		log.Printf("Error creating note: %v", err)
@@ -360,7 +393,7 @@ func createNote(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error encoding response: %v", err)
 		return
 	}
-
+	
 	log.Printf("Successfully created note with ID %d for user: %d", noteID, n.UserID)
 }
 
